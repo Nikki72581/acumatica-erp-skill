@@ -1,0 +1,19 @@
+{
+  "name": "junova-acumatica-skills",
+  "owner": {
+    "name": "Nicole / Junova Consulting",
+    "email": "nicole@junova.consulting"
+  },
+  "metadata": {
+    "description": "Acumatica ERP skills for Claude Code — SQL views, DAC design, Generic Inquiries, customization patterns, and field reference maps. Maintained by Junova Consulting.",
+    "version": "1.0.0",
+    "acumatica_version": "25R1 Build 25.101.0153.8"
+  },
+  "plugins": [
+    {
+      "name": "acumatica-erp",
+      "source": "./acumatica-erp",
+      "description": "Deep Acumatica ERP context: SQL views, DAC design, PXProjection patterns, Generic Inquiries, BQL, OData, and customization project best practices."
+    }
+  ]
+}

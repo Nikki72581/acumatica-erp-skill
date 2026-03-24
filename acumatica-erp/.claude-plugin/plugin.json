@@ -1,0 +1,8 @@
+{
+  "name": "acumatica-erp",
+  "description": "Deep Acumatica ERP context: SQL views, DAC design, PXProjection patterns, Generic Inquiries, BQL, OData, and customization project best practices. Maintained by Junova Consulting against 25R1.",
+  "version": "1.0.0",
+  "author": "Nicole / Junova Consulting",
+  "acumatica_version": "25R1 Build 25.101.0153.8",
+  "tags": ["acumatica", "erp", "sql", "dac", "generic-inquiry", "bql", "odata"]
+}
