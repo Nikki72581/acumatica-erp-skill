@@ -1,26 +1,16 @@
+# macOS
 .DS_Store
-*.swp
-*.bak
-node_modules/
-.env
+.AppleDouble
+.LSOverride
+
+# Claude local settings (never commit — contains local paths)
+.claude/settings.local.json
+
+# DAC zip archives — stored separately, not in git
+# (Use DAC-STORE-IGNORE/ folder locally, add to .gitignore)
 DAC-STORE-IGNORE/
-acumatica-erp/references/dacs/26R1/PX.Commerce.Objects/BC/DAC/Availability/InventoryItem.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AP/DAC/APInvoice.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AP/DAC/APRegister.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AP/DAC/Vendor.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AR/DAC/ARInvoice.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AR/DAC/ARRegister.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AR/DAC/ARTran.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AR/DAC/Customer.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/AR/DAC/Standalone/ARRegister.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INItemClass.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INItemSite.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INPIDetail.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INPIHeader.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INRegister.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INSite.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/INTran.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/InventoryItem.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/IN/DAC/Projections/INSiteStatus.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/SO/DAC/SOLine.cs
-acumatica-erp/references/dacs/26R1/PX.Objects/SO/DAC/SOOrder.cs
+
+# Editor
+.vscode/settings.json
+*.swp
+*.swo

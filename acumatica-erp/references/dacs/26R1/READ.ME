@@ -1,0 +1,56 @@
+# Acumatica 26R1 DAC Source Files
+
+**Version**: 26R1 (Build 26.101.xxxx)
+**Extracted**: 2026-03-24
+**Source**: AcumaticaDACs_26R1_20260324_181503.zip (stored in DAC-STORE-IGNORE/, not committed)
+**Diff status**: Complete — diffed against 25R2
+
+## Files Included
+
+### PX.Objects
+- AP/DAC/APInvoice.cs, APRegister.cs, Vendor.cs
+- AR/DAC/ARInvoice.cs, ARRegister.cs, ARTran.cs, Customer.cs, Standalone/ARRegister.cs
+- IN/DAC/INItemClass.cs, INItemSite.cs, INPIDetail.cs, INPIHeader.cs, INRegister.cs, INSite.cs, INTran.cs, InventoryItem.cs
+- IN/DAC/Projections/INSiteStatus.cs
+- SO/DAC/SOLine.cs, SOOrder.cs
+
+### PX.Commerce.Objects
+- BC/DAC/Availability/InventoryItem.cs
+
+## 26R1 vs 25R2 Diff — Confirmed Results
+
+### New Fields in 26R1
+
+| Table | Field | Type | Notes |
+|-------|-------|------|-------|
+| INSiteStatus | QtyMLPrepared | decimal(25,6) | Manufacturing/Logistics qty prepared — backed by INSiteStatusByCostCenter |
+| INSiteStatus | QtyMLBooked | decimal(25,6) | ML qty booked |
+| INSiteStatus | QtyMLDispatched | decimal(25,6) | ML qty dispatched |
+| INSiteStatus | QtyMLAllocated | decimal(25,6) | ML qty allocated — only populated on Manufacturing-enabled tenants |
+| InventoryItem | SOSource | char(1) | Source for SO line PO behavior. 'N'=None, 'D'=Drop-Ship, 'O'=Purchase to Order. Only shown when Drop-Shipments or SO-to-PO Link feature is enabled. Physical column — do NOT use in SQL views targeting 25R1 or 25R2. |
+| INTran | IsUnassigned | bit | Internal flag (PXDBBool, default false). No reporting value. Safe to ignore in SQL views. |
+
+### Confirmed Unchanged vs 25R2
+
+| Table | Status |
+|-------|--------|
+| INItemSite | PXProjection structure identical — still joins INItemSite + INSite + INItemStats |
+| INItemSite.LastCost | Still PXDBPriceCost(BqlField = typeof(INItemStats.lastCost)) |
+| INItemSite.MinQty | Still labeled "Reorder Point" in UI |
+| INPIDetail.SiteID | Still a proper FK field |
+| INTran.DocType / TranType | Both physical columns, both present, IsKey structure unchanged |
+| INSiteStatus PK | Still (InventoryID, SubItemID, SiteID) — pre-aggregation still required |
+| ARRegister | 155 fields — unchanged. Line delta is C# primary constructor syntax refactoring only. |
+| APRegister | Same — syntax refactoring only, no field changes |
+
+## Cross-Version SQL Safety
+
+Fields safe on ALL versions (25R1, 25R2, 26R1): all fields documented in dac-table-map.md without a version tag.
+
+Fields safe on 25R2 and 26R1 only:
+- dbo.INItemStats.LastCost (table introduced in 25R2)
+
+Fields safe on 26R1 only (do NOT use in SQL targeting 25R1 or 25R2):
+- dbo.InventoryItem.SOSource
+- dbo.INSiteStatus.QtyMLPrepared / QtyMLBooked / QtyMLDispatched / QtyMLAllocated
+- dbo.INTran.IsUnassigned
