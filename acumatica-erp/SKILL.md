@@ -8,10 +8,13 @@ description: Use this skill whenever the user asks about Acumatica ERP — inclu
 This skill provides Claude with deep context on Acumatica ERP internals for building SQL views, designing DACs, configuring Generic Inquiries, and deploying customization packages. It is written and maintained by Nicole (Junova Consulting) based on real-world consulting engagements.
 
 > **Always read `references/dac-table-map.md` before writing any SQL or DAC code.**
-> It contains the authoritative field mappings, join patterns, and known gotchas.
+> It contains authoritative field mappings, join patterns, and version-tagged gotchas.
 
-> **Schema version**: DAC field mappings are based on Acumatica **25R1 Build 25.101.0153.8**.
-> Field names and types should be verified if working on a different version.
+> **Supported versions**: This skill covers Acumatica **25R1**, **25R2**, and **26R1** (as encountered).
+> Version-specific differences are called out inline with `[25R1]` / `[25R2]` / `[26R1]` tags.
+> When no version tag is present, the behavior applies to all supported versions.
+> DAC source files for each version are stored in `references/dacs/` by version folder.
+> See the **[Version Differences Reference](#version-differences-reference)** section for a consolidated changelog.
 
 ---
 
@@ -155,10 +158,10 @@ namespace YourNamespace
 - `InventoryItem` — Master item record (InventoryID, InventoryCD, Descr, ItemClassID, BaseUnit, ItemStatus, StkItem flag)
 - `INItemClass` — Item classification (ItemClassID, ItemClassCD, Descr)
 - `INSite` — Warehouse/location (SiteID, SiteCD, Descr)
-- `INSiteStatus` — Qty on hand per item/warehouse (InventoryID, SiteID, QtyOnHand, QtyAvail, QtyNotAvail)
-- `INItemSite` — Item-warehouse settings (InventoryID, SiteID, AvgCost, StdCost, TranUnitCost, DfltReceiptLocationID). ⚠️ `LastCost` is DAC-only — use `INCostStatus` for cost in SQL views.
+- `INSiteStatus` — Qty on hand per item/warehouse (InventoryID, SiteID, QtyOnHand, QtyAvail, QtyNotAvail). 🚨 **[26R1]** physical table is now `dbo.INSiteStatusByCostCenter` — verify SQL views on 26R1 tenants.
+- `INItemSite` — Item-warehouse settings (InventoryID, SiteID, StdCost, DfltReceiptLocationID). ⚠️ `LastCost` is DAC-only — use `INCostStatus` for cost in SQL views. 🚨 `AvgCost` and `TranUnitCost` are computed (not physical) in **[26R1]** — do not reference in SQL on 26R1 tenants.
 - `INCostStatus` — Inventory cost layers (InventoryID, CostSiteID, QtyOnHand, TotalCost, UnitCost). The source Acumatica uses internally for valuation. CostSiteID = INSite.SiteID for warehouse-level costing.
-- `INTran` — Inventory transaction lines (DocType, TranType, RefNbr, LineNbr, InventoryID, SiteID, Qty, TranAmt, TranDate). ⚠️ Both DocType and TranType exist as physical columns in 25R1.
+- `INTran` — Inventory transaction lines (DocType, TranType, RefNbr, LineNbr, InventoryID, SiteID, Qty, TranAmt, TranDate). ⚠️ Both DocType and TranType exist as physical columns in 25R1 and 25R2.
 - `INRegister` — Inventory transaction headers (DocType, RefNbr, Released, TranDate, TotalQty, TotalAmount)
 - `INLocation` — Warehouse bin locations (LocationID, LocationCD, SiteID)
 - `INPIHeader` — Physical inventory count header (PIID, SiteID, Status, TotalPhysicalQty, TotalVarQty)
@@ -233,8 +236,6 @@ namespace YourNamespace
 6. Incorrect BQL abstract class — must follow pattern: `public abstract class fieldName : BqlType.Field<fieldName> { }`
 
 ### Import Scenarios Triggering Unexpected Validation
-**The InventoryItemMaintLastCostExt pattern** (real example): A custom `RowPersisting` event handler validated that LastCost > 0 on every save — including attribute-only imports. The fix was to scope the handler to `PXDBOperation.Insert` only, and add a null check on `ItemCosts.Current` before accessing its properties. The original code also had a try/catch that swallowed NullReferenceExceptions and replaced them with misleading error messages.
-
 **Lesson**: When an import fails with an unexpected validation error, check the customization project for `RowPersisting`, `RowUpdating`, or `FieldVerifying` event handlers on the affected DAC. These fire on ALL persist operations unless explicitly scoped.
 
 ### GI Performance Issues
@@ -245,14 +246,16 @@ namespace YourNamespace
 5. Window functions are powerful but expensive on large tables — filter early in a CTE before applying them
 6. When a subquery scans INTran→INRegister for multiple aggregations (e.g., last txn date AND 90-day velocity), consolidate into a single pass using conditional aggregation (`CASE WHEN ... THEN ... END` inside `COUNT`/`SUM`) rather than separate subqueries
 
-### INItemSite.LastCost — DAC Field Does NOT Exist in SQL
-🚨 **This is a confirmed, deployment-breaking gotcha.**
+### INItemSite.LastCost — Behavior Differs by Version
+🚨 **This is a confirmed, deployment-breaking gotcha. Read the version notes carefully.**
 
-**Symptom**: SQL view fails to create with `Invalid column name 'LastCost'` on INItemSite.
+#### [25R1] — LastCost is fully virtual (NO physical SQL column)
 
-**Root cause**: `INItemSite.LastCost` exists in the DAC (visible in the Acumatica UI, accessible via BQL and OData) but is a **virtual/calculated field** — it has no corresponding physical column in the SQL table. The DAC computes it at runtime from `INCostStatus` cost layers. Same applies to `LastCostDate`.
+**Symptom**: SQL view fails with `Invalid column name 'LastCost'` on INItemSite.
 
-**The fix**: Use `INCostStatus` to derive cost from actual cost layers:
+**Root cause**: `INItemSite.LastCost` exists in the DAC (visible in UI, accessible via BQL/OData) but has **no physical column** in the SQL table. The DAC computes it at runtime from `INCostStatus` cost layers. Same applies to `LastCostDate`.
+
+**The fix for 25R1** — use `INCostStatus` cost layers:
 ```sql
 LEFT JOIN (
     SELECT
@@ -267,20 +270,40 @@ LEFT JOIN (
     AND cost.InventoryID = ii.InventoryID 
     AND cost.CostSiteID = ss.SiteID
 ```
+`CostSiteID` maps to `INSite.SiteID` for warehouse-level costing (most common). Confirmed on Island Parts & Supplies (SaaS-hosted, 25R1) and local 25R1 demo instance.
 
-**Note**: `CostSiteID` maps to `INSite.SiteID` for warehouse-level costing (default/most common). For location-level costing, it maps to `INLocation.LocationID`. Verify with: `SELECT TOP 10 cs.CostSiteID, ins.SiteID FROM INCostStatus cs LEFT JOIN INSite ins ON ins.SiteID = cs.CostSiteID`.
+#### [25R2] — INItemSite is now a PXProjection; LastCost backed by INItemStats
 
-**Confirmed on**: Island Parts & Supplies (SaaS-hosted, 25R1) and local 25R1 demo instance. See `dac-table-map.md` Cost Fields section for full details.
+In 25R2, the `INItemSite` DAC was restructured as a `[PXProjection]` joining `dbo.INItemSite + dbo.INSite + dbo.INItemStats`. `LastCost` now uses `[PXDBPriceCost(BqlField = typeof(INItemStats.lastCost))]` — it physically lives in `INItemStats`, not `INItemSite`.
+
+- **Still do NOT reference `isite.LastCost` in SQL** — the `dbo.INItemSite` SQL table (the base table) doesn't have the column; only the DAC projection does.
+- **To use `INItemStats.LastCost` in a 25R2 SQL view**, join explicitly: `LEFT JOIN dbo.INItemStats ist ON ist.CompanyID = isite.CompanyID AND ist.InventoryID = isite.InventoryID AND ist.SiteID = isite.SiteID`
+- **The `INCostStatus` approach still works in 25R2** and is the recommended cross-version pattern.
+
+**Cross-version rule**: Use `INCostStatus` aggregation for all versions unless you have a specific reason to prefer `INItemStats`. It works on 25R1, 25R2, and is likely stable going forward.
+
+See `dac-table-map.md` Cost Fields section for full details.
 
 ### INTran — DocType vs TranType Column Ambiguity
-⚠️ **Both `DocType` and `TranType` exist as physical columns on `INTran` in 25R1.**
+⚠️ **Both `DocType` and `TranType` exist as physical columns on `INTran` across all versions, but they are NOT the same values.**
 
-The documented DAC join pattern uses `r.DocType = t.TranType`, but `INTran` also has a `DocType` column that contains the same values. Both `r.DocType = t.DocType` and `r.DocType = t.TranType` produce correct results. Use `t.DocType` for consistency with `INRegister.DocType` in the join. Confirmed on 25R1 via `INFORMATION_SCHEMA.COLUMNS`.
+- `DocType` = 1-char document-level type (`R`, `I`, `T`, `A`, `P`) — matches `INRegister.DocType`. This is the join key.
+- `TranType` = 3-char line-level transaction type (`RCP`, `ISS`, `TFR`, `ADJ`) — different values.
 
-### INPIDetail.SiteID — May Not Exist as Physical Column
-⚠️ **`SiteID` is on `INPIHeader`, not necessarily on `INPIDetail`.**
+**Always join INRegister to INTran on `r.DocType = t.DocType AND r.RefNbr = t.RefNbr`** — do not join on `TranType`. The 26R1 DAC source confirms this distinction explicitly. Earlier guidance suggesting "both contain the same values" was incorrect; they represent different concepts at different granularities.
 
-The DAC field map for `INPIDetail` does not include `SiteID` — only `PIID`, `LineNbr`, `InventoryID`, `LocationID`, `BookQty`, `PhysicalQty`, `VarQty`. Always get `SiteID` from `INPIHeader` by joining through `PIID`. Using `d.SiteID` directly on `INPIDetail` may fail on some builds.
+### INPIDetail.SiteID — Version-Dependent Physical Column Presence
+⚠️ **Behavior differs by version.**
+
+**[25R1]**: `SiteID` is NOT reliably present as a physical column on `INPIDetail`. The documented DAC field map for `INPIDetail` shows only `PIID`, `LineNbr`, `InventoryID`, `LocationID`, `BookQty`, `PhysicalQty`, `VarQty`. Always get `SiteID` from `INPIHeader` by joining through `PIID` on 25R1.
+
+**[25R2]**: `SiteID` IS present as a proper FK field on `INPIDetail` (`[PXDefault(typeof(INPIHeader.siteID))]` with `[Site()]`). It is included in the FK definitions and appears to be a physical column.
+
+**Safe cross-version pattern** (works on both): Always join to `INPIHeader` for SiteID rather than reading `d.SiteID` directly. This is safer and more explicit:
+```sql
+INNER JOIN dbo.INPIHeader h ON h.CompanyID = d.CompanyID AND h.PIID = d.PIID
+-- Use h.SiteID, not d.SiteID
+```
 
 ### Phantom Rows from LEFT JOIN to INSiteStatus
 **Symptom**: GI returns thousands of unexpected rows with NULL warehouse, zero qty, zero cost, zero transactions.
@@ -290,6 +313,25 @@ The DAC field map for `INPIDetail` does not include `SiteID` — only `PIID`, `L
 **The fix**: Use `INNER JOIN` to `INSiteStatus` when the view should only include items with warehouse presence. For cycle count and inventory reporting views, items with no warehouse presence have nothing to count.
 
 **Scale of impact**: On Island Parts (SaaS, 25R1), this accounted for ~50% of returned rows being useless NULL-warehouse records. The full dataset went from 27K+ rows to a manageable warehouse-specific count after switching to INNER JOIN.
+
+### INSiteStatus — Underlying Table Changed in 26R1
+
+🚨 **[26R1] The physical SQL table backing `INSiteStatus` changed to `INSiteStatusByCostCenter`.**
+
+In 25R1 and 25R2, SQL views could join `dbo.INSiteStatus` directly. In 26R1, the `INSiteStatus` DAC is a projection via the `[INSiteStatusProjection]` custom attribute, where every field maps via `BqlField = typeof(INSiteStatusByCostCenter.xxx)`. The physical data now lives in `dbo.INSiteStatusByCostCenter`.
+
+**Impact on existing SQL views**: Any SQL view joining `dbo.INSiteStatus` on a 26R1 tenant must be tested. If the table doesn't exist, the view will fail. Switch to `dbo.INSiteStatusByCostCenter` on 26R1. The schema (columns, PK, CompanyID join) is the same — only the table name changes.
+
+**Pre-aggregation pattern for 26R1** (same logic, different source table):
+```sql
+INNER JOIN (
+    SELECT CompanyID, InventoryID, SiteID,
+           SUM(ISNULL(QtyOnHand, 0)) AS QtyOnHand,
+           SUM(ISNULL(QtyAvail, 0))  AS QtyAvail
+    FROM dbo.INSiteStatusByCostCenter  -- [26R1] use this instead of INSiteStatus
+    GROUP BY CompanyID, InventoryID, SiteID
+) ss ON ss.CompanyID = ii.CompanyID AND ss.InventoryID = ii.InventoryID
+```
 
 ### INSiteStatus SubItemID — Silent Row Multiplication
 ⚠️ **`INSiteStatus` has a composite PK of `(InventoryID, SiteID, SubItemID)`.**
@@ -310,9 +352,15 @@ INNER JOIN (
 
 This is the single most common cause of `Invalid column name` errors in Acumatica SQL views. The DAC layer includes virtual/calculated fields (using `[PXDBCalced]`, `[PXDBScalar]`, or unbound `[PXxxx]` attributes) that exist at runtime but have no physical column in the SQL table. The Acumatica UI and OData API show these fields alongside physical ones with no visible distinction.
 
-**Rule**: Before using any DAC field in a SQL view, verify it exists as a physical column — either by querying `INFORMATION_SCHEMA.COLUMNS` on a local instance or by checking the DAC source for `[PXDBCalced]`/`[PXDBScalar]` attributes. Known virtual fields documented so far:
-- `INItemSite.LastCost` — virtual, computed from `INCostStatus`
-- `INItemSite.LastCostDate` — virtual, computed from `INCostStatus`
+**Rule**: Before using any DAC field in a SQL view, verify it exists as a physical column — either by querying `INFORMATION_SCHEMA.COLUMNS` on a local instance or by checking the DAC source for `[PXDBCalced]`/`[PXDBScalar]` attributes. Known virtual/non-physical fields documented so far:
+- `INItemSite.LastCost` — **[25R1]** virtual, computed from `INCostStatus`; **[25R2/26R1]** physical on `INItemStats` (not `INItemSite`), requires explicit join
+- `INItemSite.LastCostDate` — **[all versions]** unbound (`[PXDate]` only, no DB backing) — never directly queryable in SQL
+- `INItemSite.AvgCost` — **[25R1/25R2]** physical on `dbo.INItemSite`; **[26R1]** `[PXDBPriceCostCalced]` computed from `INItemStats.TotalCost / INItemStats.QtyOnHand` — NO physical column
+- `INItemSite.TranUnitCost` — **[25R1/25R2]** physical on `dbo.INItemSite`; **[26R1]** `[PXDBCalced]` expression — NOT a physical column
+- `INItemSite.MinCost` / `INItemSite.MaxCost` — **[25R1/25R2]** physical on `dbo.INItemSite`; **[26R1]** `BqlField` redirect to `INItemStats` — physically on `dbo.INItemStats`
+- `INItemSite.POCreate` / `INItemSite.POSource` — **[25R1/25R2]** physical; **[26R1]** `[PXDBCalced]` derived from `ReplenishmentSource`
+- `INItemSite.DemandPerDaySTDEV` / `INItemSite.LeadTimeSTDEV` — **[26R1]** confirmed unbound `[PXDecimal]` — computed in getter as `Math.Sqrt(MSE)`, no SQL column
+- `INSiteStatus.QtyExpired` — **[all versions]** fully unbound `[PXDecimal]`, no physical column even in the backing table
 
 ---
 
@@ -357,18 +405,110 @@ Acumatica exposes data via OData and a contract-based REST API. Relevant for ext
 5. **Test on a sandbox tenant first** — especially for SaaS-hosted clients
 6. **Document the DAC-to-view mapping** — future maintainers need to know which view backs which DAC
 7. **Keep Database Scripts clean** — only `CREATE OR ALTER VIEW` / `CREATE OR ALTER PROCEDURE` statements in published scripts. Diagnostic `SELECT` queries should be in a separate file for manual use, not published to the client.
-8. **Validate column names on a local instance first** — before publishing to SaaS, run the SQL on a local 25R1 instance with SSMS to catch `Invalid column name` errors that would otherwise only appear in the publish log.
+8. **Validate column names on a local instance first** — before publishing to SaaS, run the SQL on a local instance matching the client's build version to catch `Invalid column name` errors that would otherwise only appear in the publish log. The version-specific DAC source files in `references/dacs/` can help identify which columns are physical vs virtual for a given version.
 
 ### SaaS Deployment Workflow
 
 For SaaS-hosted clients where you have no SSMS access:
 
 1. **Write SQL views** — reference the `dac-table-map.md` but verify any cost or calculated fields against the known virtual field list in the gotchas section
-2. **Test locally** — run the SQL against a local Acumatica instance of the same build version. Confirm column names exist and joins produce rows.
+2. **Test locally** — run the SQL against a local Acumatica instance of the **same build version as the client tenant**. Confirm column names exist and joins produce rows. Column-level differences between 25R1 and 25R2 are documented in the Version Differences Reference section.
 3. **Validate data assumptions via OData** — if the client has GIs exposed via OData, use them to check data-level assumptions (e.g., does CostSiteID map to SiteID? Are there released transactions?). OData is the only way to query live client data without SSMS.
 4. **Publish** — deploy through the Customization Project Database Scripts tab. The publish log only shows errors, not SELECT results.
 5. **Verify via GI** — after publish, check the Generic Inquiry for expected row counts, populated columns, and data reasonableness. Export a sample to Excel for analysis if needed.
 6. **Iterate** — if the GI shows unexpected data (phantom rows, zero values), analyze the export, identify the root cause, and republish. Each iteration requires a full customization project publish.
+
+---
+
+---
+
+## Version Differences Reference
+
+This section is the consolidated changelog of known schema and DAC architecture differences across supported versions. **Always check this section first when starting work on a new client tenant** — confirm their version and cross-reference any tables you plan to query.
+
+### How to Identify a Tenant's Version
+
+In Acumatica: **Help → About** or check the URL pattern for build info. The customization project publish log also displays the build number. Key versions:
+- **25R1** = Build 25.101.xxxx (e.g., 25.101.0153.8)
+- **25R2** = Build 25.200.xxxx / 25.201.xxxx
+- **26R1** = Build 26.101.xxxx
+
+### INItemSite — Major Architecture Change in 25R2, Continued in 26R1
+
+| Area | 25R1 | 25R2 | 26R1 |
+|------|------|------|------|
+| **DAC structure** | Plain table DAC | `[PXProjection]` joining `INItemSite + INSite + INItemStats` | Same `[PXProjection]` joining `INItemSite + INSite + INItemStats` |
+| **`LastCost` field** | Virtual — no physical column, computed from `INCostStatus` at runtime | `[PXDBPriceCost(BqlField = typeof(INItemStats.lastCost))]` — physically on `dbo.INItemStats` | Same as 25R2 — physically on `dbo.INItemStats` |
+| **`LastCostDate` field** | Virtual — no physical column | `[PXDate]` (unbound) — still no direct SQL column | `[PXDate]` (unbound) — no SQL column |
+| **`MinCost` / `MaxCost`** | Physical columns on `dbo.INItemSite` | Moved to `INItemStats` | `[PXDBPriceCost(BqlField = typeof(INItemStats.minCost/maxCost))]` — physically on `dbo.INItemStats` |
+| **`AvgCost`** | Physical column on `dbo.INItemSite` | Physical on `dbo.INItemSite`, calculated via `[PXDBPriceCostCalced]` from `INItemStats` | 🚨 `[PXPriceCost]` + `[PXDBPriceCostCalced]` — **NO physical column at all.** Computed as `INItemStats.TotalCost / INItemStats.QtyOnHand`. Do NOT reference in SQL. |
+| **`TranUnitCost`** | Physical column on `dbo.INItemSite` | Physical column on `dbo.INItemSite` | 🚨 `[PXDBCalced]` expression (`Switch<...stdCost...INItemStats...>`) — **NOT a physical column.** Do NOT reference in SQL. |
+| **`DfltPutawayLocationID`** | Not present | Not present | ✅ New physical column — default putaway location for WMS workflows |
+| **`MinQty` UI label** | "Reorder Point" (gotcha persists) | "Reorder Point" (gotcha persists) | "Reorder Point" (gotcha persists) |
+| **SQL approach** | Use `INCostStatus` for cost; `isite.*` for all other fields | Use `INCostStatus` for cost (still best cross-version); optionally join `dbo.INItemStats` for 25R2-native cost | Use `INCostStatus` for cost. Do not use `isite.AvgCost` or `isite.TranUnitCost` in SQL — both are computed |
+
+🚨 **26R1 Action Required**: If any SQL view uses `isite.AvgCost` or `isite.TranUnitCost`, those references will fail with `Invalid column name` on 26R1 tenants. Replace with `INCostStatus` aggregation or explicit `INItemStats` join.
+
+### INPIDetail — SiteID Column Presence
+
+| Area | 25R1 | 25R2 | 26R1 |
+|------|------|------|------|
+| **`SiteID` physical column** | Not reliably present — use `INPIHeader.SiteID` via join | Present as FK field (`[Site()]` attribute with `[PXDefault(typeof(INPIHeader.siteID))]`) | ✅ Physical column confirmed — `[Site()]` compound attr, no BqlField redirect |
+| **Safe pattern** | Join to `INPIHeader` | Join to `INPIHeader` (still safest cross-version) | Join to `INPIHeader` (still safest cross-version) |
+
+### INTran — DocType / TranType
+
+| Area | 25R1 | 25R2 | 26R1 |
+|------|------|------|------|
+| **Both columns present** | ✅ Confirmed via `INFORMATION_SCHEMA.COLUMNS` | ✅ Confirmed via DAC source | ✅ Confirmed via DAC source |
+| **`DocType` length** | 1-char | 1-char | 1-char (`PXDBString(1, IsFixed=true)`) |
+| **`TranType` length** | 3-char | 3-char | 3-char (`PXDBString(3, IsFixed=true)`) — line-level txn type (ISS, RCP, etc.) |
+| **Recommended join field** | `t.DocType` (matches `INRegister.DocType`) | `t.DocType` (same) | `t.DocType` (same) |
+
+⚠️ **Clarification**: `DocType` and `TranType` on `INTran` are NOT the same values. `DocType` is the 1-char header type (mirrors `INRegister.DocType`). `TranType` is the 3-char line-level code (e.g., `ISS`, `RCP`, `TFR`). Always join INRegister to INTran on `DocType` + `RefNbr`.
+
+### INSiteStatus — Composite PK / SubItemID / Underlying Table Change
+
+| Area | 25R1 | 25R2 | 26R1 |
+|------|------|------|------|
+| **PK structure** | `(InventoryID, SubItemID, SiteID)` — SubItemID row-multiplies | `(InventoryID, SubItemID, SiteID)` — same structure confirmed | Same composite PK |
+| **Physical SQL table** | `dbo.INSiteStatus` | `dbo.INSiteStatus` | 🚨 `dbo.INSiteStatusByCostCenter` — the DAC is now a projection over this table |
+| **SQL query pattern** | `FROM dbo.INSiteStatus` | `FROM dbo.INSiteStatus` | Verify on 26R1 tenant: `dbo.INSiteStatus` may not exist. Use `dbo.INSiteStatusByCostCenter` if needed. |
+| **Pre-aggregation** | Required to avoid SubItemID row-multiplication | Same | Same |
+| **New ML fields** | Not present | Not present | `QtyMLPrepared`, `QtyMLBooked`, `QtyMLDispatched`, `QtyMLAllocated`, `QtyMLToPurchase`, `QtyPurchaseForML`, `QtyPurchaseForMLPrepared`, `QtyReceiptsForML` — backed by `INSiteStatusByCostCenter` columns |
+
+🚨 **26R1 Breaking Change Risk**: In 26R1 the `INSiteStatus` DAC is a `[INSiteStatusProjection]` over `dbo.INSiteStatusByCostCenter`. All DAC fields map via `BqlField = typeof(INSiteStatusByCostCenter.xxx)`. SQL views referencing `dbo.INSiteStatus` directly must be verified on a 26R1 instance — the table name may have changed. Until confirmed, use `dbo.INSiteStatusByCostCenter` on 26R1 tenants.
+
+### 26R1 — New Fields Summary
+
+Fields confirmed added in 26R1 DAC source (not present in 25R2):
+
+| Table/DAC | New Field | Type | Purpose |
+|-----------|-----------|------|---------|
+| `INItemSite` | `DfltPutawayLocationID` | `int` | Default putaway bin for WMS workflows |
+| `INSiteStatusByCostCenter` | `QtyMLPrepared` | `decimal` | ML-driven allocation: prepared qty |
+| `INSiteStatusByCostCenter` | `QtyMLBooked` | `decimal` | ML-driven allocation: booked qty |
+| `INSiteStatusByCostCenter` | `QtyMLDispatched` | `decimal` | ML-driven allocation: dispatched qty |
+| `INSiteStatusByCostCenter` | `QtyMLAllocated` | `decimal` | ML-driven allocation: allocated qty |
+| `INSiteStatusByCostCenter` | `QtyMLToPurchase` | `decimal` | ML purchase planning: to purchase qty |
+| `INSiteStatusByCostCenter` | `QtyPurchaseForML` | `decimal` | ML purchase planning: purchased qty |
+| `INSiteStatusByCostCenter` | `QtyPurchaseForMLPrepared` | `decimal` | ML purchase planning: prepared qty |
+| `INSiteStatusByCostCenter` | `QtyReceiptsForML` | `decimal` | ML purchase planning: received qty |
+| `INTran` | `IsSpecialOrder` | `bit` | Whether this is a special order transaction |
+| `INTran` | `InventorySource` | `char(1)` | Material source for project accounting (`InventorySourceType` list) |
+| `INTran` | `CostLayerType` | `char(1)` | Distinguishes Normal vs. Special Order cost layers |
+| `INTran` | `CostCenterID` | `int` | Cost center identifier for multi-cost-center setups |
+| `INRegister` | `IsCorrection` | `bit` | Whether document is a correction transaction |
+| `INRegister` | `OrigReceiptNbr` | `nvarchar(15)` | Original receipt reference for corrections |
+| `INRegister` | `IgnoreAllocationErrors` | `bit` | Skip allocation validation errors on release |
+| `INSite` | `BuildingID` | `int` | FK → INSiteBuilding (building/facility grouping) |
+| `INSite` | `CarrierFacility` | `nvarchar` | Carrier facility code for shipping |
+| `INSite` | `NonStockPickingLocationID` | `int` | Default location for non-stock item picking |
+| `INItemClass` | `PlanningMethod` | `nvarchar` | MRP planning method default for the class |
+| `INItemClass` | `ReplenishmentSource` | `nvarchar` | Replenishment source default |
+| `INItemClass` | `PostToExpenseAccount` | `nvarchar` | Expense account posting setting |
+| `INItemClass` | `PreferredItemClasses` | `nvarchar` | Related item class preferences |
+| `INItemClass` | `PriceOfSuggestedItems` | `nvarchar` | Price rule for substitution suggestions |
 
 ---
 
@@ -380,7 +520,9 @@ The following areas should be added as Nicole encounters them in practice:
 - [ ] Webhook and push notification patterns
 - [ ] Acumatica's built-in pivot table / dashboard widget configuration
 - [ ] Mobile framework DAC considerations
-- [ ] Acumatica 2025 R2+ schema changes (verify per version)
+- [x] Acumatica 25R2 schema changes — documented in Version Differences Reference above
+- [x] 26R1 schema changes — documented from 26R1 DAC source files (March 2026). Key changes: INSiteStatus now projects `INSiteStatusByCostCenter`, INItemSite.AvgCost and TranUnitCost are no longer physical columns, new ML quantity fields, new INTran cost layer fields.
 - [ ] Construction and Manufacturing vertical-specific tables
 - [ ] Inter-company and multi-currency considerations in views
 - [ ] Attribute (CSAnswers) querying patterns in detail
+- [ ] `INItemStats` table — full field map needed (confirmed physical table in 25R2+; backs INItemSite projection; confirmed columns: InventoryID, SiteID, LastCost, MinCost, MaxCost, TotalCost, QtyOnHand, LastCostDate)
