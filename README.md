@@ -99,6 +99,7 @@ Claude.ai does not support custom skill installation from GitHub directly. The c
 
 For the full skill experience including reference files, Claude Code is recommended.
 
+I've also added a zip file in the project called acumatica-erp.zip. This can be downloaded and imported into Claude Skills and it will include the DAC Map. 
 ---
 
 ## Updating the Skill
